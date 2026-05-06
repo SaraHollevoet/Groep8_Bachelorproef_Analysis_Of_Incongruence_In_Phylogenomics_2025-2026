@@ -1,0 +1,118 @@
+---
+execute: 
+  echo: true
+  eval: false
+  warning: false
+---
+
+# Concatenation-Based Phylogeny Inference
+
+In this chapter, we outline the process of building a phylogenetic tree using the concatenation-based approach. This technique consists of combining sequences from multiple genes into a single dataset, enabling a comprehensive reconstruction of evolutionary relationships. The resulting tree will be used as a point of comparison to assess the accuracy and robustness of the new phylogenetic method developed in this project.
+
+```{r here}
+#| message: false
+#| eval: true
+
+library(here)
+library(cogeqc)
+library(Biostrings)
+library(tidyverse)
+library(ape)
+library(msa)
+library(Herper)
+library(ggtree)
+
+set.seed(123) # for reproducibility
+options(timeout = 1e8)
+
+source(here("code", "utils.R")) # helper functions
+```
+
+## The multiple sequence alignment (MSA)
+
+We'll first load the BUSCO genes. These are conserved genes that are expected to be present as single-copies in the genomes. There are 362 BUSCO genes that we will be using.
+
+```{r}
+busco_genes <- readRDS(here("data","busco_seqs.rds"))
+```
+
+Each BUSCO gene was aligned with MUSCLE, converted to amino acid format, and trimmed to remove poorly aligned regions (>50% gaps).
+
+```{r}
+# Perform MSA for each BUSCO gene with MUSCLE
+msas <- lapply(busco_genes, msa, method = "Muscle")
+
+# Convert MSAs to `AAStringSet` class
+msas_aa <- lapply(msas, as, "AAStringSet")
+
+# Trim MSAs with remove columns with >50% of gaps
+trimmed_msas <- lapply(msas_aa, trim_alignment, max_gap = 0.5)
+```
+
+## Concatenation
+
+IQ-TREE 2 was installed and added to the system PATH.
+
+```{r}
+Sys.setenv(
+  PATH = paste(
+    Sys.getenv("PATH"),
+    "C:\\Users\\emile\\AppData\\Local\\Microsoft\\WindowsApps\\iqtree-2.4.0-Windows\\bin",
+    sep = ";"
+  )
+)
+```
+
+The trimmed alignments were concatenated into a single supermatrix, which was then used to infer a species tree with a defined outgroup using a multi-threaded approach.
+
+```{r}
+# Concatenate alignments
+conc_msa <- Reduce(xscat, trimmed_msas)
+names(conc_msa) <- names(trimmed_msas[[1]])
+
+# Take a look at the concatenated alignment
+head(conc_msa)
+
+# Infer species tree from concatenated alignment
+outgroup <- "Rhizobium_rhizophilum_gca_004912145.ASM491214v1"
+tree_conc <- infer_species_tree(
+    list(conc = conc_msa),
+    outgroup, 
+    threads = 4
+)
+```
+
+## Tree visualization
+
+The inferred phylogenetic tree was exported in Newick format for downstream analysis and reproducibility.
+
+```{r}
+# Save the tree file
+ape::write.tree(tree_conc, file = here("products", "result_files", "tree_conca.nwk"))
+```
+
+The saved tree was reloaded as a phylogenetic object and visualized to inspect topology and labeling, with improved tip readability.
+
+```{r}
+# Read tree as a `phylo` object
+tree_conc <- read.tree(here("products", "result_files", "tree_conca.nwk"))
+
+# Plot tree
+plot(tree_conc, show.node.label = TRUE)
+
+# Tree less overlap
+p_conc <- ggtree(tree_conc) +
+  geom_tiplab(fontface="italic")
+```
+
+## Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo}
+#| eval: true
+#| echo: false
+sessioninfo::session_info()
+```
+
+## References {.unnumbered}

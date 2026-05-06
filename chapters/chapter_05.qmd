@@ -1,0 +1,132 @@
+---
+execute: 
+  echo: true
+  eval: false
+  warning: false
+---
+
+# SUMMARISING THE FINDINGS
+
+
+```{r here}
+#| message: false
+#| eval: true
+
+library(here)
+library(syntenet)
+library(phangorn)
+library(patchwork)
+library(colorspace)
+library(here)
+library(cogeqc)
+library(Biostrings)
+library(tidyverse)
+library(ape)
+library(msa)
+library(BiocManager)
+library(S4Vectors)
+library(IRanges)
+library(GenomeInfoDb)
+library(GenomicRanges)
+library(ggplot2)
+library(Herper)
+library(treeio)
+library(ggtree)
+set.seed(123) # for reproducibility
+```
+
+## COMPUTING DISTANCES BETWEEN TREES
+```{r}
+tree_conc <- read.tree(here("products", "trees", "tree_conca.nwk"))
+tree_coa <- read.tree(here("products", "trees", "astral_tree_gcf.tree"))
+tree_syn <- read.tree(here("products", "trees", "tree_synteny.nwk"))
+tree_conc$tip.label
+tree_coa$tip.label
+tree_syn$tip.label
+#renaming tip labels
+tree_conc$tip.label <- gsub("Agrobacterium_", "A", tree_conc$tip.label)
+tree_conc$tip.label <- gsub("Asp_", "Agrobac_", tree_conc$tip.label)
+tree_conc$tip.label <- gsub("Asp__", "Agrobac_", tree_conc$tip.label)
+id_mapping <- syntenet:::create_species_id_table(tree_conc$tip.label)
+tree_conc$tip.label <- id_mapping$species_id
+
+tree_coa$tip.label <- gsub("Agrobacterium_", "A", tree_coa$tip.label)
+tree_coa$tip.label <- gsub("Asp_", "Agrobac_", tree_coa$tip.label)
+tree_coa$tip.label <- gsub("Asp__", "Agrobac_", tree_coa$tip.label)
+id_mapping2 <- syntenet:::create_species_id_table(tree_coa$tip.label)
+tree_coa$tip.label <- id_mapping2$species_id
+
+#removing mismatching species
+keep <- tree_syn$tip.label
+tree_conc <- keep.tip(tree_conc, keep)
+tree_coa <- keep.tip(tree_coa, keep)
+
+```
+```{r}
+#plotting
+p_syn <- ggtree(tree_syn) +
+  geom_tiplab(fontface="italic", size = 2, allign = TRUE  ) +
+  xlim(0,3) +
+  ylim(0,50)
+
+p_conc <- ggtree(tree_conc) +
+  geom_tiplab(fontface="italic", size = 2.5, allign = TRUE) +
+  xlim(0,1) +
+  ylim(0, 50)
+
+p_coa <- ggtree(tree_coa) +
+  geom_tiplab(fontface="italic", size = 2.5, allign = TRUE) +
+  xlim(0,30)
+
+p_final <- wrap_plots(p_syn, p_conc, p_coa, nrow = 1)
+p_final
+```
+
+```{r}
+#compute pairwise distances
+dist_vec <- c(treedist(tree_syn, tree_coa)[1],
+treedist(tree_syn, tree_conc)[1],
+treedist(tree_syn, tree_syn)[1],
+
+treedist(tree_coa, tree_coa)[1],
+treedist(tree_coa, tree_conc)[1],
+treedist(tree_coa, tree_syn)[1],
+
+treedist(tree_conc, tree_coa)[1],
+treedist(tree_conc, tree_conc)[1],
+treedist(tree_conc, tree_syn)[1])
+
+dist_df <- data.frame(
+  ref = c("syn", "syn", "syn", "coa", "coa", "coa", "conc", "conc", "conc"),
+  target = c("coa", "conc", "syn", "coa", "conc", "syn", "coa", "conc", "syn"),
+  dist = dist_vec
+)
+```
+
+```{r}
+#heatmap
+ggplot(dist_df, aes(x = ref, y= target, fill = dist)) +
+  geom_tile() +
+  theme_classic() +
+  scale_fill_continuous_sequential(palette = "Mint") +
+  geom_text(aes(label = dist)) +
+  labs(title = "Robinson-Foulds distances between trees", x = NULL, y = NULL, fill = "Distance")
+  
+
+```
+
+
+## Section 2
+
+
+## Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo}
+#| eval: true
+#| echo: false
+sessioninfo::session_info()
+```
+
+## References {.unnumbered}

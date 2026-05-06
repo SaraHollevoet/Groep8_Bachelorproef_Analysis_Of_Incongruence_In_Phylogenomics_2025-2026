@@ -1,0 +1,224 @@
+---
+execute: 
+  echo: true
+  eval: false
+  warning: false
+---
+
+
+```{r here}
+#| message: false
+#| eval: true
+
+library(here)
+
+set.seed(123) # for reproducibility
+```
+
+
+# Synteny tree
+
+In this chapter, we infer a phylogenetic tree using a synteny‑based approach, which reconstructs evolutionary relationships based on the conservation of gene order across genomes. Instead of relying on sequence similarity, this method focuses on the presence and organization of homologous genes along chromosomes, capturing a genome‑level evolutionary signal. Because horizontal gene transfer in bacteria typically affects individual genes rather than entire syntenic blocks, synteny‑based inference is expected to be less directly influenced by HGT‑driven sequence variation.
+
+
+## Loading and standardizing input data
+Protein sequences and genome annotations (GFF files) for all Agrobacterium genomes and the *Rhizobium* outgroup are loaded. Species names are shortened for cleaner downstream plotting and analysis.
+
+```{r}
+library(syntenet)
+library(here)
+
+prot <- readRDS(here("data/proteomes2.rds"))
+annot <- readRDS(here("data/annotation2.rds"))
+
+# Rename species
+names(prot) <- gsub("Agrobacterium_", "A", names(prot))
+names(prot) <- gsub("Asp_", "Agrobac_", names(prot))
+names(prot) <- gsub("Asp__", "Agrobac_", names(prot))
+
+names(annot) <- gsub("Agrobacterium_", "A", names(annot))
+names(annot) <- gsub("Asp_", "Agrobac_", names(annot))
+names(annot) <- gsub("Asp__", "Agrobac_", names(annot))
+```
+
+## Data preprocessing
+Before building the synteny network, we validate that the protein and annotation files are consistent and convert them into a standard format required by syntenet.
+
+```{r}
+# Check that gene IDs match between proteomes and annotations
+check_input(prot, annot)
+
+# Process into a format suitable for synteny detection
+pdata <- process_input(prot, annot)
+```
+
+
+## Sequence similarity search with DIAMOND
+DIAMOND performs an all-versus-all protein sequence comparison to identify homologous gene pairs across all genomes. This step is essential to find anchors for synteny blocks.
+
+```{r}
+# Verify that DIAMOND is installed and accessible
+diamond_is_installed()
+
+# Run DIAMOND on all proteomes
+blast_list <- run_diamond(seq = pdata$seq)
+```
+
+The resulting list contains, for each species pair, the best hits and alignment scores. Because this step takes a long time, we save the output to disk.
+
+```{r}
+saveRDS(blast_list, here("data", "blast_list.rds"))
+```
+
+A quick look at the first few rows of one comparison:
+```{r}
+names(blast_list)
+head(blast_list[[1]])
+```
+
+
+## Synteny network inference
+The BLAST hits are combined with genomic coordinates to detect syntenic blocks-regions where gene content and order are conserved. Anchor pairs from these blocks are stored as edges in an undirected graph, forming the "synteny network".
+
+```{r}
+net <- infer_syntenet(blast_list, pdata$annotation)
+head(net)
+```
+
+We save the network for later use.
+```{r}
+saveRDS(net, here("data", "synteny_net.rds"))
+```
+
+A table mapping short species identifiers to original names is also created.
+```{r}
+id_table <- create_species_id_table(names(pdata$seq))
+id_table
+```
+
+
+## Network clustering and phylogenomic profiling
+The synteny network is clustered into groups of genes that share similar evolutionary histories (synteny clusters).
+
+```{r}
+clusters <- cluster_network(net)
+head(clusters)
+```
+
+Next, we build a phylogenomic profile matrix. Each entry indicates how many genes from a given species belong to a particular cluster. Clusters found in all species indicate highly conserved synteny; clusters restricted to a subset of species may reflect lineage-specific rearrangements.
+
+```{r}
+profiles <- phylogenomic_profile(clusters)
+head(profiles)
+```
+
+
+## Visualizing the phylogenomic profiles
+A heatmap shows the presence of synteny clusters across species. 
+
+```{r}
+species_annotation <- data.frame(
+  Species = colnames(profiles),
+  Group = "Agrobacterium"
+)
+
+plot_profiles(
+  profiles,
+  species_annotation = species_annotation,
+  cluster_species = colnames(profiles),
+  cluster_columns = TRUE
+)
+```
+
+
+```{r}
+# Filter profiles matrix to only include group-specific clusters
+idx <- rownames(profiles) %in% gs_clusters$Cluster
+p_gs <- profiles[idx, ]
+
+# Plot heatmap
+plot_profiles(
+    p_gs, species_annotation, 
+    cluster_species = colnames(p_gs), 
+    cluster_columns = TRUE
+)
+```
+
+A network plot of the first few group-specific clusters illustrates the connections between genes (nodes) and their syntenic relationships (edges).
+
+```{r}
+id <- gs_clusters$Cluster[1:5]
+plot_network(net, clusters, cluster_id = id)
+```
+
+
+## Microsynteny-based phylogeny reconstruction
+For phylogenetic inference, the cluster profile matrix is converted into a binary presence‑absence matrix: 1 if a cluster is found in a species, 0 otherwise.
+
+```{r}
+bt_mat <- binarize_and_transpose(profiles)
+
+# Looking at the first 5 rows and 5 columns of the matrix
+bt_mat[1:5, 1:5]
+```
+
+We convert the cluster profiles to a binary presence‑absence matrix and remove clusters that occur in all or none of the species. Next, we add the IQ‑TREE 2 executable to the system PATH and infer a maximum likelihood tree under the binary Mk model, using Rhizobium as the outgroup.
+
+```{r}
+# Add example directory /home/username/bioinfo_tools to PATH
+Sys.setenv(
+    PATH = paste(
+        Sys.getenv("PATH"), "/Users/sarahollevoet/Downloads/iqtree-2.4.0-macOS/bin", sep = ":"
+    )
+)
+
+# IQ-TREE requires binary data and equal sequence length.
+bt_mat <- binarize_and_transpose(profiles)
+
+# Removes clusters that are present in all species or in none.
+bt_mat <- bt_mat[, colSums(bt_mat) != 0]
+bt_mat <- bt_mat[, colSums(bt_mat) != nrow(bt_mat)]
+
+# Uses IQ-TREE to infer an evolutionary tree; performs maximum likelihood phylogeny.
+if (iqtree_is_installed()) {
+  phylo <- infer_microsynteny_phylogeny(bt_mat, outgroup = "Rhizo")
+}
+```
+
+
+## Visualizing and saving the synteny tree
+The resulting tree is read as a phylo object and plotted with ggtree.
+
+```{r}
+phylo
+
+library(ggtree)
+tree_file <- phylo[grep("\\.treefile$", phylo)]
+
+library(ape)
+tree <- read.tree(tree_file)
+
+ggtree(tree) +
+    geom_tiplab(size = 3) 
+```
+
+
+## Wrapping up
+Finally, the tree is saved in Newick format for later comparison.
+
+```{r}
+ape::write.tree(tree, file = here("products", "result_files", "tree_synteny.nwk"))
+```
+
+
+## Session info 
+
+This document was created under the following conditions:
+
+```{r sessioninfo}
+#| eval: true
+#| echo: false
+sessioninfo::session_info()
+```
+
+

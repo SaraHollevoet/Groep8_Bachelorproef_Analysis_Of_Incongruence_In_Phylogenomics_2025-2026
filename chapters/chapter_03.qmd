@@ -1,0 +1,138 @@
+---
+execute: 
+  echo: true
+  eval: false
+  warning: false
+---
+
+# Coalescence-Based Phylogony Inference
+
+In this chapter, we infer a phylogenetic tree using a coalescence‑based approach, which reconstructs evolutionary relationships by integrating information from multiple individual gene trees. Rather than merging all gene sequences into a single alignment, this method treats each gene independently and explicitly accounts for variation in their evolutionary histories. This makes coalescent‑based inference particularly well suited for handling heterogeneous signals across loci.
+
+
+```{r here}
+#| message: false
+#| eval: true
+
+
+library(here)
+library(cogeqc)
+library(Biostrings)
+library(tidyverse)
+library(ape)
+library(msa)
+library(BiocManager)
+library(S4Vectors)
+library(IRanges)
+library(GenomeInfoDb)
+library(GenomicRanges)
+library(ggplot2)
+library(Herper)
+library(ASTRAL)
+library(treeio)
+library(ggtree)
+annotation <- readRDS(here("data" ,"annotation.rds"))
+annotation
+
+busco_genes <- readRDS(here("data","busco_seqs.rds"))
+busco_genes
+
+proteomes <- readRDS(here ("data", "proteomes.rds"))
+proteomes
+
+species_metadata <- readRDS(here ("data", "species_metadata"))
+species_metadata
+
+
+set.seed(123) # for reproducibility
+options(timeout = 1e8)
+
+source(here("utils.R")) # helper functions
+Sys.setenv(
+  PATH = paste(
+    Sys.getenv("PATH"), "C:\\Users\\woutd\\AppData\\Local\\Microsoft\\WindowsApps\\iqtree-2.4.0-Windows\\bin" , sep = ";"
+  )
+)
+
+
+```
+
+## Performing an msa
+
+After all the data was loaded, a multiple seqeunce allignment can be created by using the Muscle method. To use the msa later it is also easier to convert the output into an AAStringSet
+```{r here}
+# Perform MSA for each BUSCO gene with MUSCLE
+msas <- lapply(busco_genes, msa, method = "Muscle")
+
+# Convert MSAs to `AAStringSet` class
+msas_aa <- lapply(msas, as, "AAStringSet")
+
+# Take a look at the MSAs for the first 3 genes
+head(msas_aa, 3)
+```
+
+## Trimming the msa tree, so all the gaps are removed
+
+As the multiple sequence alignment still contains multiple gaps which that can interfere when making a tree. A function called "trimmed_msas" was used. When inferring the tree, a problem arose where some genes wouldn't infer with some species, to solve this, these genes were removed. The removed genes can ben found in the vector called "bad"   
+```{r}
+# Trim MSAs with remove columns with >50% of gaps
+trimmed_msas <- lapply(msas_aa, trim_alignment, max_gap = 0.5)
+
+# Remove bad genes
+bad <- c("102328at356", "125305at356" , "128354at356","129387at356","133912at356","134247at356","140338at356","141504at356","20294at356","46097at356","47774at356","53126at356","68921at356","80701at356", "87562at356", "87990at356","95094at356","103547at356","113565at356","116138at356","119266at356","120363at356","121617at356","")
+trimmed_msas_final <- trimmed_msas[!names(trimmed_msas) %in% bad]
+
+# Take a look at trimmed MSAs
+head(trimmed_msas, 3)
+```
+
+## Inferrring the final tree
+
+After receiving the actual data, a tree can be made. In this chapter the coalescent method is used, which means that for each BUSCO gene available a species tree is made. in total there were 339 genes and consequently there were also 339 different trees
+```{r}
+# Infer single-locus trees
+outgroup <- "Rhizobium_rhizophilum_gca_004912145.ASM491214v1"
+tree_sl <- infer_singlelocus_trees(
+    trimmed_msas_final,
+    outgroup,
+    outdir = here("products", "sl_trees"),
+    threads = 8
+)
+
+# Read tree
+tree_sl <- read.tree(here("products", "sl_trees.treefile" ))
+
+tree_sl
+```
+
+## Constructing the final tree
+
+As there is no efficient and correct way to compare all of the 339 different trees, a single one was made. This tree was constructed by the ASTRAL program. 
+```{r}
+
+system("java -jar astral.5.7.8.jar -i sl.treefile -o astral.tree")
+
+# Read species tree created with ASTRAL
+astral_tree <- read.tree(here("output", "sl_trees", "astral.tree"))
+
+complete_tree <- read.tree(here("astral_tree_gcf.tree"))
+
+
+# Plot tree
+plot(complete_tree, show.node.label = TRUE)
+
+```
+
+
+
+## Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo}
+#| eval: true
+#| echo: false
+sessioninfo::session_info()
+```
+
+## References {.unnumbered}

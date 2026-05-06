@@ -1,0 +1,121 @@
+---
+execute: 
+  echo: true
+  eval: false
+  warning: false
+---
+
+# Genomic data acquisition
+
+In this chapter, we will describe the code to obtain genomic data from 
+Ensembl Bacteria. In this project, we will use genomes from *Agrobacterium sp.*
+species. As of March 27, there are 70 species on Ensembl Bacteria. And as an outgroup we will use the genome from *Rhizobium sp.*.
+
+```{r here}
+#| message: false
+#| eval: true
+
+library(here)
+library(biomartr)
+library(tidyverse)
+
+set.seed(123) # for reproducibility
+```
+
+## Download data from Ensembl Bacteria
+
+We will download species metadata from Ensembl Bacteria, and then use
+species names to download proteomes and annotation using __biomartr__.
+
+```{r}
+# Get metadata for *Agrobacterium sp.*
+bacteria_metadata <- read_tsv(
+    "https://ftp.ensemblgenomes.ebi.ac.uk/pub/bacteria/current/species_EnsemblBacteria.txt",
+    show_col_types = FALSE
+) |>
+    janitor::clean_names() |>
+    filter(str_detect(species, "agrobacterium"))
+
+# Download proteomes
+proteome_dir <- here("data", "proteomes")
+if(!dir.exists(proteome_dir)) { dir.create(proteome_dir, recursive = TRUE) }
+
+getProteomeSet(
+    db = "ensembl", organisms = bacteria_metadata$species, path = proteome_dir
+)
+
+# Download annotation
+annotation_dir <- here("data", "annotation")
+if(!dir.exists(annotation_dir)) { dir.create(annotation_dir, recursive = TRUE) }
+
+getGFFSet(
+    db = "ensembl", organisms = bacteria_metadata$species, path = annotation_dir,
+    skip_bacteria = FALSE
+)
+```
+
+Now, we will load the proteomes as a list of `AAStringSet` objects,
+and annotation as a list of `GRangesList` objects.
+
+```{r}
+# Load annotation
+annot_files <- list.files(
+    here("data", "annotation"), pattern = ".gff3", full.names = TRUE
+)
+names(annot_files) <- gsub("\\.62\\._ensembl.*", "", basename(annot_files))
+annot <- lapply(annot_files, function(x) {
+    ranges <- rtracklayer::import(x)
+    ranges <- ranges[ranges$type == "gene"]
+    
+    return(ranges)
+})
+
+# Load proteomes
+seq_files <- list.files(
+    here("data", "proteomes"), pattern = ".fa", full.names = TRUE
+)
+names(seq_files) <- gsub("\\.pep.*", "", basename(seq_files))
+seq <- lapply(seq_files, function(x) {
+    s <- Biostrings::readAAStringSet(x)
+    names(s) <- gsub(" .*", "", gsub(".* gene:", "", names(s)))
+    
+    return(s)
+})
+```
+
+## Wrapping up {.unnumbered}
+
+Finally, we will save objects created in this chapter for further reuse.
+
+```{r}
+# R objects
+## list of `AAStringSet`: proteomes
+saveRDS(
+    seq, compress = "xz",
+    file = here("data", "proteomes.rds")
+)
+
+## list of `GRanges`: annotation
+saveRDS(
+    annot, compress = "xz",
+    file = here("data", "annotation.rds")
+)
+
+## Species metadata
+saveRDS(
+    bacteria_metadata, compress = "xz",
+    file = here("data", "species_metadata.rds")
+)
+```
+
+## Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo}
+#| eval: true
+#| echo: false
+sessioninfo::session_info()
+```
+
+## References {.unnumbered}
